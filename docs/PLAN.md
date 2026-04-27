@@ -111,6 +111,69 @@ player_id, override_bonus, note
 - **Build-path heatmap**: distribution of your roster constructions (Zero-RB, Hero-RB, Late-QB, etc.).
 - CSV / JSON export.
 
+### Market Visualizer
+- Per-round distribution of your picks vs. market ADP.
+- Highlights every pick where you went ≥ N spots above/below market and tags it: contrarian, chalk, or in-line.
+- Per-position deviation chart: are you systematically reaching on TEs, fading early QBs, etc.
+- Drill-down: click any data point to see the draft + roster context.
+- Auto-recomputed nightly as ADP shifts; flags picks that *became* contrarian as the market moved.
+
+### Playoff team learning database
+A separate Underdog historical dataset that the engine learns from and scores your live drafts against.
+
+**What's stored**
+- All available Underdog playoff/advancing teams from prior BBM and similar tournaments (BBM I–VI; expandable).
+- Per team: season, contest, draft slot, full pick list (round, overall, player), advance round (R2 / R3 / Finalist / Winner), final points, prize.
+- Per team derived features: position counts, stack composition (QB + N pass-catchers, bring-back yes/no, biggest stack size), build-path label (Zero-RB / Hero-RB / Robust-RB / Onesie-Late / etc.), bye-week exposure, W15–17 starter count, ADP-vs-actual lift.
+
+**Ingest**
+- Initial seed: bulk CSV import of public BBM finalist data (Hayden Winks's Underdog data drops, public finalist tweets/threads).
+- Manual loader UI in the side panel: drop a CSV, it normalizes player names against the alias table.
+- Versioned per season; new seasons appended after BBM completes.
+
+**Diagnose / report**
+- "Playoff similarity" score for your current in-progress roster: cosine similarity of your feature vector to the centroid of advancing teams.
+- After each pick, the side panel shows: *"Your build matches 18% of BBM finalist teams. Closest historical match: Team #2143 (advanced to Finals)."*
+- Weekly portfolio report: how your 100/500/1000 most-recent drafts distribute against historical playoff build-paths. Where are you over- or under-indexed vs. winning patterns?
+- Position-spend-by-round delta: heatmap of your average spend vs. playoff teams' average spend, per round, per position.
+
+**Learn**
+- Logistic-regression / gradient-boost classifier: features = roster composition mid-draft, target = made playoffs (yes/no). Outputs "playoff probability" tag updated live as you draft.
+- Retrains nightly when new draft data is added; retrains end-of-season when new playoff outcomes land.
+- Feature importance surfaced in the report ("biggest playoff predictor this season: QB stack size ≥ 2").
+
+**Live integration**
+- The classifier's playoff probability is one of the chips next to each candidate's EV: *"+3.2% playoff probability if you take Hampton here."*
+- The flex bonus in the EV formula gets nudged upward for picks that move you closer to high-advance-rate build-paths.
+
+### Scoring profiles + cross-format adjustment
+Underdog scores half-PPR; DraftKings best ball scores full-PPR. Player value, especially for pass-catching RBs, target-hog WRs, and TEs, shifts meaningfully between the two. The engine handles this with a `scoring_profile` primitive.
+
+**Profiles**
+- `ud_half_ppr` — 0.5/rec, standard.
+- `dk_full_ppr` — 1.0/rec, standard.
+- Extensible to TE-premium and other variants later.
+
+**What's keyed by profile**
+- Projections: every player has both a `projection_ud` and `projection_dk` row, computed by the same baseline model with the scoring profile parameter swapped.
+- Tier breaks: tier cutoffs are recomputed per profile (so tier 3 RB on UD ≠ tier 3 RB on DK).
+- Reach penalty / EV scoring: uses the profile of the active draft.
+
+**What's profile-agnostic (transfers directly)**
+- Build-path labels (Zero-RB, Hero-RB, etc.).
+- Stack patterns and bring-back rules.
+- Bye-week conflict logic.
+- Position-spend-by-round patterns from the playoff DB (mostly — see below).
+
+**Cross-format adjustment for DK using UD playoff data**
+Since the playoff DB is sourced from Underdog, applying its lessons to a DK draft requires a transfer step:
+1. Re-project each player's value through `dk_full_ppr`.
+2. Re-bucket players into tiers under DK scoring before computing playoff-similarity features.
+3. Apply a per-position scaling factor on "round X position spend" to account for full-PPR shifting WR/RB receiving value up — calibrated from comparing player-value distributions between profiles.
+4. Build-paths and stack patterns transfer with no adjustment.
+
+Side panel always shows which scoring profile is active for the current draft (badge: "UD ½-PPR" or "DK PPR").
+
 ---
 
 ## 3. Architecture
@@ -161,11 +224,14 @@ Target end-to-end latency: < 250 ms.
 | Player IDs / bio | Sleeper API | nightly sync |
 | ADP (UD, DK) | scrape public ADP pages | nightly cron |
 | Pick variance per slot | aggregated from your own past drafts + bootstrap from historical public draft data | rebuilt weekly |
-| Seasonal projections (baseline) | self-trained on `nfl_data_py` | season start + nightly |
-| Seasonal projections (blend partner) | Sleeper API projections | nightly |
+| Seasonal projections — UD ½-PPR | self-trained on `nfl_data_py`, ud profile | season start + nightly |
+| Seasonal projections — DK full-PPR | same model, dk profile | season start + nightly |
+| Seasonal projections (blend partner) | Sleeper API projections, both profiles | nightly |
 | Schedule + opponent strength | `nfl_data_py` schedule | season start |
 | Live pick stream | extension content script | wss |
 | Your draft history | UD CSV + DK CSV upload + live capture | on draft completion |
+| Underdog playoff teams (historical) | public BBM data drops + finalist tweets + manual CSV upload | one-time seed; appended each season |
+| Final season points (for outcome labels) | UD season-end CSV / nflverse box scores | end of season |
 
 ---
 
@@ -177,9 +243,10 @@ lockes-picks/
 │   ├── api/                   # FastAPI routes
 │   ├── recommender/           # EV engine, stacking, late-season
 │   ├── simulator/             # Monte Carlo
-│   ├── projections/           # baseline model + blender
-│   ├── portfolio/             # exposures, co-occurrence
-│   ├── ingest/                # ADP + Sleeper sync
+│   ├── projections/           # baseline model + blender, scoring profiles
+│   ├── portfolio/             # exposures, co-occurrence, market visualizer
+│   ├── playoff/               # historical playoff DB, classifier, similarity
+│   ├── ingest/                # ADP + Sleeper sync + playoff CSV loader
 │   ├── db/                    # SQLite models, migrations
 │   └── tests/
 ├── extension/                 # Chrome MV3
@@ -209,10 +276,15 @@ lockes-picks/
 | 8 | Stacking + bye logic | bonuses, bring-back, bye conflicts | 1 |
 | 9 | Custom rankings + override hygiene | CSV import, ADP-decay, stale review | 1 |
 | 10 | Portfolio dashboard | exposures, player-pair matrix, build-paths | 2 |
-| 11 | 10-tab harden | concurrent state, tab switching, perf tests | 1 |
-| 12 | Polish + dogfood + bug bash | real drafts, fix what surprises | 2 |
+| 11 | Market Visualizer | per-round contrarian/chalk view, position deviation chart | 1 |
+| 12 | Scoring profiles | dual UD ½-PPR / DK full-PPR projections + cross-format adjuster | 1–2 |
+| 13 | Playoff DB ingest | schema, CSV loader, name normalization, BBM seed data | 1–2 |
+| 14 | Playoff features + classifier | feature extraction, logistic/GBM model, nightly retrain | 2 |
+| 15 | Live playoff-similarity integration | playoff-prob chip in side panel, flex-bonus nudge from classifier | 1 |
+| 16 | 10-tab harden | concurrent state, tab switching, perf tests | 1 |
+| 17 | Polish + dogfood + bug bash | real drafts, fix what surprises | 2 |
 
-**Total ~19–22 focused weekends.** Dogfood-able from milestone 4.
+**Total ~25–29 focused weekends.** Dogfood-able from milestone 4. Playoff-similarity goes live around milestone 15 — until then the core EV engine carries the recommendation logic.
 
 ---
 
@@ -223,6 +295,9 @@ lockes-picks/
 - **WebSocket reliability across 10 tabs**: handle reconnection, draft-state replay on reconnect.
 - **Pick-event de-duplication**: MutationObserver can fire on the same DOM update multiple times. Idempotent pick handler with hash of `{draftId, pickNumber}`.
 - **Self-sourced ADP volatility**: small N early-season → noisy availability sim. Mitigation — bootstrap from public ADP for first few weeks until your own draft history catches up.
+- **Playoff-DB sample size**: BBM finalists are a small fraction of total entrants per season. Classifier risks overfitting if we treat "advanced" as the only signal. Mitigation — use multiple outcome bands (R2 advance, R3 advance, finalist, winner), regularize aggressively, and validate against held-out seasons.
+- **UD → DK transfer accuracy**: scoring-profile adjustment is approximate; can't fully simulate DK BBM outcomes from UD playoff data. Surface the cross-format scaling as a confidence metric, not a hard truth.
+- **Playoff data freshness**: BBM finalist data isn't always fully public until weeks after. Mitigation — manual loader for late-arriving data; classifier auto-retrains on append.
 
 ---
 
@@ -240,5 +315,6 @@ lockes-picks/
 - Weekly W1–17 projections (deferred to v1.1)
 - In-tool rankings spreadsheet editor (CSV-only for v1)
 - Jaccard similarity (player-pair co-occurrence is the simpler equivalent we're shipping)
-- Market visualizer (deferred)
 - Weather-adjusted correlations (deferred)
+- DK historical playoff DB (DK-native winning team data — deferred until UD model is validated; meanwhile we use UD data scoring-adjusted to DK)
+- TE-premium scoring profile (deferred; structure supports adding it)
