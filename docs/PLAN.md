@@ -37,15 +37,36 @@ score(p) = blended_value(p)
         + stack_bonus(p, roster)
         - bye_conflict(p, roster)
         + late_season_bonus(p)
-        + override(p)            # capped, ADP-decayed
+        + override(p)              # capped, ADP-decayed
         + scarcity_term
+        - reach_penalty(p, pick)   # round-aware
+        + flex_bonus(p, pick, roster)  # late-round stack / gap-fill unlock
 ```
 Where `scarcity_term = expected_value_drop_if_skipped` from the Monte Carlo availability sim.
 
 Surfaced as: top N candidates with EV value, one-line reasoning, late-season chip, stack badge.
 
+### Round-aware reach tolerance
+ADP variance is not constant — pick stddev grows roughly linearly with pick number. A 5-pick reach in round 2 is meaningful; a 5-pick reach in round 13 is noise. The engine treats this as a first-class primitive:
+
+```
+adp_stddev(pick) ≈ 1.5 + 0.15 · pick      # default; recalibrated from your draft history
+reach_delta      = current_pick − player_adp           # +ve = reaching
+reach_penalty    = (reach_delta / adp_stddev(pick))² · w_reach
+```
+Same numeric reach has high penalty early and ~zero penalty late.
+
+**Late-round flex bonus.** When `adp_stddev(pick) > flex_threshold` (≈ round 7+), the engine *unlocks* an additive bonus for picks that:
+- complete a viable stack (QB + 2nd pass-catcher, bring-back),
+- fill a thin position the roster needs (e.g., still no TE2 entering round 13),
+- pair with high-co-occurrence players from the portfolio matrix.
+
+Effect: late-round "reaches" that lock in a stack or roster gap are *recommended*, not flagged.
+
+The same `adp_stddev(pick)` feeds the MC sim (so availability % widens correctly late) and the override decay threshold (so a round-9 override isn't decayed by round-9-noise).
+
 ### Monte Carlo availability simulator
-- Inputs: ADP per site, ADP stddev per pick slot (from historical pick logs), opponent draft tendencies model.
+- Inputs: ADP per site, `adp_stddev(pick)` curve (recalibrated from your pick logs), opponent draft tendencies model.
 - 5–10k sims, target < 100 ms per refresh.
 - Output: P(player available at next pick) shown next to each candidate.
 
@@ -66,7 +87,7 @@ Manual override column in `rankings.csv`:
 player_id, override_bonus, note
 ```
 - `adp_at_override_time` and `override_set_date` snapshotted on save.
-- **Auto-decay** as ADP moves toward your view: `decayed = original * max(0, 1 − adp_delta / threshold)` (default threshold = 15 spots).
+- **Auto-decay** as ADP moves toward your view: `decayed = original * max(0, 1 − adp_delta / decay_threshold(pick))`. The threshold scales with `adp_stddev(pick)` so a round-2 override decays on small ADP moves while a round-9 override needs a bigger move to decay.
 - **Hard cap** at ±15% combined bonus per player.
 - **Stale-override review panel** — weekly nudge to keep / reduce / remove.
 
