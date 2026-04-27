@@ -1,73 +1,94 @@
-# Fantasy Draft Engine — Build Plan
+# Locke's Picks — v1 Spec
 
-A draft assistant in the spirit of LegUp Sidekick, Draft Caddy, and ETR's Solver Draft Assistant. Browser-overlay first, best-ball focused, with a portfolio layer.
+Personal best-ball draft assistant for one user (Locke). Live, popup-only, Windows + Chrome, $0 budget, Python local-first.
 
----
-
-## 1. Competitor feature scrape
-
-### LegUp Sidekick (Legendary Upside)
-- Browser overlay on Underdog and DraftKings best ball.
-- **Dynamic rankings** that re-sort after every pick based on roster construction, same-team stacking, bring-back correlation, QB bye overlap, and stacking optionality.
-- Toggle between LegUp rankings, ADP, and user-uploaded custom rankings.
-- **Player Availability %** — probability a player survives to your next pick (BBM-style standard contests only; not Eliminator, Weekly Winners, SuperFlex, Marathon, Sprint).
-- **Market Visualizer** — where LegUp rankings diverge from market ADP.
-- **Jaccard Similarity** tool — portfolio-level diversification across all your drafts.
-- Big Board view; access to all LegUp written + podcast content.
-
-### Draft Caddy (Endgame Syndicate)
-- Browser extension (Chrome + Firefox) for Underdog, DraftKings, Drafters. ~$29.99/mo.
-- Configurable best-ball settings; user controls every overlay element + colors.
-- Custom ADP CSV upload (DraftKings supports name + position + team matching).
-- **Suggest a Player** (primary + secondary suggestion).
-- Week 15/16/17 playoff correlation highlighting on player rows and schedule cells.
-- Live player-exposure overlays across drafts in progress.
-
-### ETR Solver Draft Assistant
-- Browser overlay for Underdog + DraftKings best ball, plus Underdog Battle Royale (weekly snake).
-- **Smart Player Recommendations** — dynamically scores remaining pool against your roster + contest parameters; adapts to stacking vs. contrarian objectives.
-- Auto-sync to ETR Underdog/DraftKings rankings or in-season DFS projections (with ETR sub).
-- Custom rules: player groups, exposure caps, locks/excludes, stacking rules, contrarian rules.
-- Personalized ownership tracking from your historical drafts.
-- Lives inside the larger Solver suite (DFS optimizer, sims, bankroll tracker).
-
-### Adjacent tools (worth borrowing from)
-- **Spike Week Draft Hacker** — fully customizable overlay colors; playoff-week highlighting; DraftIQ exposure sync.
-- **Best Ball Team Builder** — side-by-side companion (not overlay); build paths; portfolio up to 500 teams (Pro).
-- **Best Ball Overlay** — CLV tracking, playoff stack visualization.
-- **FantasyPros Draft Wizard / RotoWire / Draft Sharks** — redraft-league sync (Yahoo, ESPN, Sleeper, CBS, NFL).
+> Inspired by LegUp Sidekick, Draft Caddy, and ETR Solver — but rebuilt as a personal tool with a Pick EV engine, team stacking logic, and a portfolio layer tuned for a 3k-drafts/season grinder.
 
 ---
 
-## 2. Synthesized feature matrix
+## 1. Constraints (locked)
 
-| Capability | LegUp | Draft Caddy | Solver | Ours (target) |
-|---|---|---|---|---|
-| Underdog overlay | ✅ | ✅ | ✅ | ✅ |
-| DraftKings overlay | ✅ | ✅ | ✅ | ✅ |
-| Drafters overlay | — | ✅ | — | ✅ |
-| Snake / Battle Royale | — | — | ✅ | ✅ |
-| Redraft sync (Yahoo/ESPN/Sleeper) | — | — | — | ✅ (stretch) |
-| Dynamic re-ranking after each pick | ✅ | partial | ✅ | ✅ |
-| Custom rankings upload (CSV) | ✅ | ✅ | ✅ | ✅ |
-| Player Availability % to next pick | ✅ | — | — | ✅ |
-| Stack / correlation highlighting | ✅ | ✅ (W15–17) | ✅ | ✅ |
-| Bye-week conflict warnings | ✅ | — | partial | ✅ |
-| Suggest-a-player (top N) | partial | ✅ | ✅ | ✅ |
-| Exposure tracking across drafts | partial | ✅ | ✅ | ✅ |
-| Portfolio Jaccard / diversification | ✅ | — | — | ✅ |
-| Market vs. our-rankings visualizer | ✅ | — | — | ✅ |
-| Custom rules (locks, fades, caps, stacks) | partial | partial | ✅ | ✅ |
-| Build-path tracking | — | — | — | ✅ (from BBTB) |
-| Customizable overlay colors / fields | partial | ✅ | partial | ✅ |
-| Post-draft grading + portfolio dashboard | — | partial | ✅ | ✅ |
+| | |
+|---|---|
+| Audience | Single user. No auth, no billing, no public release. |
+| Platforms | Underdog + DraftKings best ball only. NFL only. |
+| Browser | Chrome (MV3) only. Desktop. |
+| OS | Windows. |
+| Concurrent drafts | Up to 10 live tabs. |
+| Page mutation | **None.** Content script is a passive observer. UI lives in a Chrome **side panel**. |
+| Hosting | Local-first. Backend runs on `localhost`, SQLite at `%APPDATA%\Lockes-Picks\`. |
+| Budget | $0 runtime. OpenAI used only as a dev-time accelerator. |
+| Mobile | Out of scope for v1. |
+| Auction / dynasty / keeper | Out of scope. |
 
-**Net-new differentiators we'll build:**
-1. **Pick EV engine** — score each candidate as `value_now − E[value_at_next_pick]` using a Monte Carlo simulator over ADP variance (most competitors give a static score).
-2. **Roster construction optimizer** — solve remaining roster slots as a constrained optimization, not just "next best player."
-3. **Multi-source rankings blender** — weighted blend of ETR / LegUp / FantasyPros / user CSV with per-source confidence.
-4. **Playoff schedule + weather-adjusted correlation** scoring (W15–17 game environment).
-5. **Open data layer** — exposures and projections exportable as JSON/CSV by default.
+---
+
+## 2. Feature set (locked)
+
+### Live draft mode
+- Read pick stream from UD and DK draft pages via `MutationObserver` — no DOM writes.
+- Drafted players removed from suggestions and the available board within ~200 ms.
+- Side panel auto-switches to the active draft tab; all 10 sessions kept current in the background.
+
+### Pick EV engine
+For each available player `p`:
+```
+score(p) = blended_value(p)
+        + stack_bonus(p, roster)
+        - bye_conflict(p, roster)
+        + late_season_bonus(p)
+        + override(p)            # capped, ADP-decayed
+        + scarcity_term
+```
+Where `scarcity_term = expected_value_drop_if_skipped` from the Monte Carlo availability sim.
+
+Surfaced as: top N candidates with EV value, one-line reasoning, late-season chip, stack badge.
+
+### Monte Carlo availability simulator
+- Inputs: ADP per site, ADP stddev per pick slot (from historical pick logs), opponent draft tendencies model.
+- 5–10k sims, target < 100 ms per refresh.
+- Output: P(player available at next pick) shown next to each candidate.
+
+### Stacking logic
+- QB + same-team WR/TE bonuses (additive per pass-catcher already rostered).
+- Bring-back bonus on opposing pass-catcher in W15–17 games.
+- Bye-week conflict penalty when a second QB shares a bye with rostered QB.
+
+### Late-season bonus heuristic + override
+Heuristic adders:
+- Rookie: configurable bump.
+- Handcuff to fragile/aging RB1: configurable.
+- Schedule strength W10–17 (DVOA): ±%.
+- Returning from injury / late starter: +%.
+
+Manual override column in `rankings.csv`:
+```
+player_id, override_bonus, note
+```
+- `adp_at_override_time` and `override_set_date` snapshotted on save.
+- **Auto-decay** as ADP moves toward your view: `decayed = original * max(0, 1 − adp_delta / threshold)` (default threshold = 15 spots).
+- **Hard cap** at ±15% combined bonus per player.
+- **Stale-override review panel** — weekly nudge to keep / reduce / remove.
+
+### Custom rankings
+- CSV upload only for v1 (LegUp-sheet style template provided).
+- Columns: `player_id, name, team, pos, my_rank, my_tier, override_bonus, note`.
+- Re-upload anytime; tool diffs and applies.
+- Bye-week and team auto-joined from player table — you don't have to maintain those.
+
+### Projections engine (build-own, free sources)
+- **Baseline model**: trained on `nfl_data_py` historical seasonal stats (last 6 seasons), simple gradient-boost regression per position.
+- **Blend**: weighted average of baseline + Sleeper API projections + your overrides.
+- **Late-season bonus** layered on top.
+- Refresh nightly via APScheduler.
+- Stretch: weekly projections (W1–17) so playoff scoring is real, not estimated. Deferred to v1.1.
+
+### Portfolio (offline analysis)
+- All your completed drafts auto-imported (CSV from UD/DK + extension capture as backup).
+- **Exposure dashboard**: per-player and per-stack across the portfolio.
+- **Player-pair co-occurrence matrix**: heatmap of how often any two players appear together in your teams. Sortable, filterable by contest type.
+- **Build-path heatmap**: distribution of your roster constructions (Zero-RB, Hero-RB, Late-QB, etc.).
+- CSV / JSON export.
 
 ---
 
@@ -75,146 +96,128 @@ A draft assistant in the spirit of LegUp Sidekick, Draft Caddy, and ETR's Solver
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Browser Extension (MV3, TypeScript)                        │
-│  ├── content scripts: Underdog / DraftKings / Drafters      │
-│  │     - DOM scrape pick stream                             │
-│  │     - inject overlay UI (React shadow-DOM)               │
+│  Chrome Extension (MV3, TypeScript)                         │
+│  ├── content scripts (UD, DK)                               │
+│  │     - MutationObserver, READ-ONLY, debounced             │
+│  │     - emit pick events                                   │
 │  ├── background service worker                              │
-│  │     - WebSocket to engine, auth, cache                   │
-│  └── popup: settings, rankings upload, account              │
+│  │     - WebSocket to localhost:8000                        │
+│  │     - tab tracking                                       │
+│  └── side panel (React)                                     │
+│        - suggestions, EV, stacking, late-season chips       │
+│        - portfolio summary                                  │
 └────────────────────────┬────────────────────────────────────┘
-                         │ wss
+                         │ ws://localhost:8000
 ┌────────────────────────▼────────────────────────────────────┐
-│  Draft Engine API (Python FastAPI or Node Fastify)          │
-│  - /draft/state  (POST pick events, GET state)              │
-│  - /recommend    (returns ranked candidates + reasoning)    │
-│  - /availability (Monte Carlo P(player at next pick))       │
-│  - /portfolio    (exposures, Jaccard, build-paths)          │
-└──────────┬─────────────────────────────┬────────────────────┘
-           │                             │
-   ┌───────▼────────┐           ┌────────▼─────────┐
-   │ Recommender    │           │ Simulator        │
-   │ - rules engine │           │ - ADP MC sims    │
-   │ - blended rank │           │ - opponent model │
-   │ - stack logic  │           │ - availability % │
-   └───────┬────────┘           └────────┬─────────┘
-           └──────────────┬──────────────┘
-                  ┌───────▼────────┐
-                  │ Data layer     │
-                  │ Postgres + S3  │
-                  │ - players      │
-                  │ - projections  │
-                  │ - ADP history  │
-                  │ - user drafts  │
-                  │ - rules        │
-                  └────────────────┘
+│  Local Engine (Python 3.12, FastAPI)                        │
+│  - draft session manager (10 concurrent)                    │
+│  - recommender                                              │
+│  - MC simulator (NumPy)                                     │
+│  - projections service (APScheduler nightly)                │
+│  - portfolio analytics                                      │
+│  Storage: SQLite at %APPDATA%\Lockes-Picks\db.sqlite        │
+│  Run: PyInstaller .exe, launched on login via Startup       │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**Tech choices**
-- Extension: Manifest V3, TypeScript, React + shadow DOM (style isolation), Vite.
-- Backend: Python 3.12 + FastAPI; Pydantic models; uvicorn; Redis for hot draft state and rate limiting.
-- Storage: Postgres (players, drafts, exposures, rules); S3 for projection snapshots and exposure CSVs.
-- Sim: NumPy / Numba for Monte Carlo; precompute lookup tables where possible.
-- Auth: Magic-link email + JWT; Stripe for subscriptions.
+**Run model**: `lockes-picks.exe` starts on Windows login, listens on `localhost:8000`. Chrome extension auto-connects. No internet required during a draft beyond the draft site itself.
+
+**Data flow on a pick**:
+1. Underdog DOM mutates (new pick announced).
+2. Content script's `MutationObserver` fires → extracts player + pick number.
+3. Background worker sends `{tabId, draftId, pick}` over WebSocket.
+4. Engine updates that draft's state, recomputes top N + EV + availability.
+5. Side panel receives updated payload, re-renders.
+
+Target end-to-end latency: < 250 ms.
 
 ---
 
 ## 4. Data sources
 
-| Need | Source | How |
+| Need | Source | Method |
 |---|---|---|
-| Player IDs / bio | Sleeper public API + manual mapping | nightly sync |
-| ADP (Underdog, DK, NFC, FFPC) | scrape public ADP pages + user-imported drafts | scheduled crawl |
-| Projections | partner feed (FantasyPros, Sleeper) or build our own from nflverse / nfl_data_py | nightly |
-| Playoff schedule | nflverse schedule | static per season |
-| Weather (W15–17) | OpenWeather / NOAA | T-3d before week |
-| User draft pick stream | extension content script (DOM events) | live wss |
-| User exposure history | extension upload + manual CSV | per draft |
-
-Mapping players across sites is the perennial hard problem — plan for a curated `player_alias` table seeded once, with an admin UI to resolve mismatches.
+| Player IDs / bio | Sleeper API | nightly sync |
+| ADP (UD, DK) | scrape public ADP pages | nightly cron |
+| Pick variance per slot | aggregated from your own past drafts + bootstrap from historical public draft data | rebuilt weekly |
+| Seasonal projections (baseline) | self-trained on `nfl_data_py` | season start + nightly |
+| Seasonal projections (blend partner) | Sleeper API projections | nightly |
+| Schedule + opponent strength | `nfl_data_py` schedule | season start |
+| Live pick stream | extension content script | wss |
+| Your draft history | UD CSV + DK CSV upload + live capture | on draft completion |
 
 ---
 
-## 5. Recommender — how a pick suggestion is computed
+## 5. Repo layout
 
-For each remaining player `p`:
 ```
-score(p) = w1 * blended_rank_value(p)
-        + w2 * roster_fit(p, current_roster)
-        + w3 * stack_bonus(p, current_roster)
-        + w4 * playoff_correlation(p, current_roster)
-        - w5 * bye_conflict(p, current_roster)
-        - w6 * portfolio_overexposure(p, user_portfolio)
-        + w7 * scarcity(p, position, picks_until_next)
+lockes-picks/
+├── engine/                    # Python backend
+│   ├── api/                   # FastAPI routes
+│   ├── recommender/           # EV engine, stacking, late-season
+│   ├── simulator/             # Monte Carlo
+│   ├── projections/           # baseline model + blender
+│   ├── portfolio/             # exposures, co-occurrence
+│   ├── ingest/                # ADP + Sleeper sync
+│   ├── db/                    # SQLite models, migrations
+│   └── tests/
+├── extension/                 # Chrome MV3
+│   ├── src/content/           # UD + DK observers
+│   ├── src/background/
+│   ├── src/sidepanel/         # React side panel
+│   └── manifest.json
+├── data/                      # CSVs, model artifacts (gitignored)
+├── scripts/                   # build .exe, install on Windows
+└── docs/
 ```
-Then rank, and surface top N with one-line reasoning ("WR1 stack with rostered QB; survives W17 bye conflict").
-
-`scarcity` uses `availability_pct(p, next_pick)` from the simulator — the same number shown on the overlay.
-
-**Availability simulator**: Monte Carlo over ADP distribution + opponent draft tendencies (per-pick mean and stddev from historical pick logs); 5–10k sims under 100ms cached.
 
 ---
 
-## 6. UX — what shows up on the draft screen
+## 6. Milestones
 
-1. **Top-of-pick overlay strip**: "Recommended: J. Chase (94) — stack QB+WR; 38% to be available next pick".
-2. **Rank delta column** next to ADP — green/red diff vs. our blended rank.
-3. **Stack badges** on player rows for teammates of rostered players.
-4. **Playoff badges** — small W15/16/17 schedule strength chips.
-5. **Bye conflict warning** — red dot if drafting them creates a same-bye QB problem.
-6. **Custom rule chips** — "LOCK", "FADE", "CAP HIT" on the row when a rule fires.
-7. **Side panel** — current roster construction, exposure %, build-path match.
-
-Everything customizable in popup: which columns, colors, thresholds, which rankings to blend.
-
----
-
-## 7. Portfolio layer
-
-- All completed drafts auto-sync via the extension.
-- **Exposure dashboard**: per-player and per-stack exposure across all teams in a contest.
-- **Jaccard similarity matrix** — heatmap of how unique each team is vs. the rest of your portfolio.
-- **Build-path tracker** — which configurations (e.g., Zero-RB, Robust-RB, Onesie-Late) you're heavy/light on.
-- **Market visualizer** — distribution of your picks vs. market ADP per round, highlighting where you're contrarian.
-- CSV / JSON export and shareable read-only links.
-
----
-
-## 8. Milestones
-
-| # | Milestone | Scope | ~Effort |
+| # | Milestone | Output | Effort |
 |---|---|---|---|
-| 0 | Repo scaffolding | mono-repo (extension/, api/, web/, infra/), CI, lint, types | 3 d |
-| 1 | Data foundation | player table, alias mapping, ADP ingest, projections ingest | 1.5 wk |
-| 2 | Engine v1 | static blended rank, scarcity calc, FastAPI endpoints, tests | 1.5 wk |
-| 3 | Underdog content script | DOM scrape, pick events, basic overlay rendering | 1.5 wk |
-| 4 | Recommender v1 | top-N suggestion, stack bonus, bye conflict, reasoning strings | 1 wk |
-| 5 | Availability % simulator | Monte Carlo, caching, perf budget < 100 ms | 1 wk |
-| 6 | DraftKings + Drafters scripts | parity with Underdog | 1.5 wk |
-| 7 | Portfolio dashboard (web) | Next.js, exposures, build-paths, Jaccard | 2 wk |
-| 8 | Custom rules + CSV rankings | popup UI, rule DSL, rules eval in recommender | 1 wk |
-| 9 | Auth + billing | magic link, Stripe, plan gating | 1 wk |
-| 10 | Battle Royale / snake support | per-format ruleset, snake-aware scarcity | 1 wk |
-| 11 | Beta polish, telemetry, docs | feature flags, error reporting, support docs | 1 wk |
+| 0 | Repo + tooling | monorepo, lint, CI, Windows build script | 1 wknd |
+| 1 | Data foundation | player table, alias mapping, Sleeper sync, ADP ingest | 2 |
+| 2 | Projections v1 | baseline model + Sleeper blend + late-season bonus | 2–3 |
+| 3 | Local backend skeleton | FastAPI, SQLite schema, draft session model, ws | 1 |
+| 4 | UD content script | passive DOM observer, pick event pipeline, real-draft verified | 2 |
+| 5 | DK content script | parity with UD | 1–2 |
+| 6 | Side panel UI | React side panel: suggestions, EV column, late-season chips | 2 |
+| 7 | EV engine + sim | Monte Carlo, EV scoring, perf < 100 ms | 2 |
+| 8 | Stacking + bye logic | bonuses, bring-back, bye conflicts | 1 |
+| 9 | Custom rankings + override hygiene | CSV import, ADP-decay, stale review | 1 |
+| 10 | Portfolio dashboard | exposures, player-pair matrix, build-paths | 2 |
+| 11 | 10-tab harden | concurrent state, tab switching, perf tests | 1 |
+| 12 | Polish + dogfood + bug bash | real drafts, fix what surprises | 2 |
 
-Total to public beta: **~12–14 weeks** for one engineer; ~7–8 weeks for two.
-
----
-
-## 9. Risks & open questions
-
-- **TOS / scraping**: Underdog, DK, Drafters may not love a DOM-injecting overlay. Read TOS, ship as user-installed extension (user is the agent), no MITM. Be ready to pivot to a side-by-side companion (à la Best Ball Team Builder) if any platform sends a C&D.
-- **DOM brittleness**: each platform redesign breaks the scraper. Mitigation — versioned selector packs hot-loaded from API so we can patch without a Chrome Web Store re-review.
-- **Player ID mapping** — recurring source of subtle bugs. Invest in admin tooling early.
-- **Projection licensing**: building our own from nflverse is free but heavy. Partner feed shortcuts months of work but eats margin.
-- **Latency**: overlay must respond < 200 ms after each pick or it feels broken. Pre-compute aggressively, push state via wss.
-- **Pricing**: Sidekick ~$50/season tiers, Draft Caddy $29.99/mo, Solver tiered. Likely land at $19–29/mo seasonal with portfolio in higher tier.
+**Total ~19–22 focused weekends.** Dogfood-able from milestone 4.
 
 ---
 
-## 10. What this plan deliberately defers
+## 7. Risks I'm watching
 
-- DFS optimization (Solver does this; we stay focused on draft).
-- In-season lineup tools (separate product).
-- Mobile app (extension first; native later if there's demand).
-- Auction drafts (post-MVP).
+- **DOM brittleness on UD/DK**: SPAs with churning class names. Mitigation — versioned selector pack stored in SQLite, hot-loadable without re-publishing the extension. If UD redesigns mid-season, fix is one config update.
+- **Build-own projections quality vs. competitors who license**: v1 will be coarser than ETR. Mitigation — your manual rankings + override column carry the edge until the model matures.
+- **WebSocket reliability across 10 tabs**: handle reconnection, draft-state replay on reconnect.
+- **Pick-event de-duplication**: MutationObserver can fire on the same DOM update multiple times. Idempotent pick handler with hash of `{draftId, pickNumber}`.
+- **Self-sourced ADP volatility**: small N early-season → noisy availability sim. Mitigation — bootstrap from public ADP for first few weeks until your own draft history catches up.
+
+---
+
+## 8. Explicitly out of scope (v1)
+
+- Mobile / app drafts
+- Snake / Battle Royale
+- Redraft (Yahoo/ESPN/Sleeper) sync
+- Auction / dynasty / keeper
+- DFS lineup tools
+- In-season lineup optimization
+- Multi-user / auth / billing
+- Multi-sport
+- AI/LLM "explain this pick" in the runtime path
+- Weekly W1–17 projections (deferred to v1.1)
+- In-tool rankings spreadsheet editor (CSV-only for v1)
+- Jaccard similarity (player-pair co-occurrence is the simpler equivalent we're shipping)
+- Market visualizer (deferred)
+- Weather-adjusted correlations (deferred)
